@@ -109,6 +109,10 @@ the journal and are retried by the next deployment, even when both manifests
 already match. A no-change deployment still writes a completed journal entry
 with an updated timestamp.
 
+The remote manifest and purge journal URLs are invalidated whenever their
+Storage objects are updated, so inspecting them through the CDN does not return
+an older cached copy.
+
 Targeted invalidations use `exactPath=true`. With `BUNNY_PULL_ZONE_ID`
 configured, 100 or more affected URLs use one full Pull Zone purge by default.
 

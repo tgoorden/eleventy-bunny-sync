@@ -1,6 +1,6 @@
 {
   "name": "eleventy-bunny-sync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Manifest-based Eleventy deployments to Bunny Storage and CDN",
   "type": "module",
   "author": "Thomas Goorden",

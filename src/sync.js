@@ -31,6 +31,19 @@ async function runOperations(items, concurrency, operation, { kind, onProgress }
   });
 }
 
+function recordPurgeResults(stats, results) {
+  stats.purgesSucceeded += results.filter(result => result.status === 'succeeded').length;
+  stats.purgesSkipped += results.filter(result => result.status === 'skipped').length;
+  stats.purgesFailed += results.filter(result => result.status === 'failed').length;
+}
+
+async function purgeExactPaths(client, pathNames, concurrency, onProgress) {
+  return runOperations(pathNames.map(filePath => [filePath]), concurrency, async ([filePath]) => {
+    const result = await client.purgeFile(filePath);
+    return operationResult(filePath, result.skipped ? 'skipped' : 'succeeded');
+  }, { kind: 'purge', onProgress });
+}
+
 export function createStatistics() {
   return {
     localFiles: 0,
@@ -119,8 +132,8 @@ export async function synchronize(options) {
     return { stats, difference };
   }
   if (!hasChanges && !hasPendingPurges) {
-    stats.purgeMode = 'none';
-    stats.purgeUrls = 0;
+    stats.purgeMode = 'targeted';
+    stats.purgeUrls = 1;
     onProgress({ type: 'stage', phase: 'Recording no-change deployment attempt' });
     await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
       status: 'completed',
@@ -128,6 +141,24 @@ export async function synchronize(options) {
       paths: [],
     }));
     stats.purgeLog = 'completed';
+    onProgress({ type: 'stage', phase: 'Refreshing remote purge log CDN cache', total: 1 });
+    const metadataPurgeResults = await purgeExactPaths(client, [safePurgeLogRemotePath], 1, onProgress);
+    recordPurgeResults(stats, metadataPurgeResults);
+    const metadataPurgeFailures = metadataPurgeResults.filter(result => result.status === 'failed');
+    if (metadataPurgeFailures.length) {
+      const details = metadataPurgeFailures.map(result => result.error?.message ?? String(result.error)).join('; ');
+      await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
+        status: 'pending',
+        mode: 'targeted',
+        paths: [safePurgeLogRemotePath],
+        error: details,
+      }));
+      stats.purgeLog = 'pending';
+      throw new AggregateError(
+        metadataPurgeFailures.map(result => result.error),
+        'Remote purge log CDN invalidation failed.',
+      );
+    }
     onProgress({ type: 'stage', phase: 'Already synchronized' });
     return { stats, difference };
   }
@@ -163,17 +194,21 @@ export async function synchronize(options) {
     throw new AggregateError(mutationFailures.map(result => result.error), `${mutationFailures.length} storage operation(s) failed.`);
   }
 
-  const purgePathNames = [...new Set([
+  const affectedPathNames = [...new Set([
     ...recoveredPaths,
     ...uploads.map(entry => entry[0]),
     ...difference.deleted.map(entry => entry[0]),
   ])].sort();
-  const purgePaths = purgePathNames.map(filePath => [filePath]);
-  stats.purgeUrls = purgePaths.length;
+  const purgePathNames = [...new Set([
+    ...affectedPathNames,
+    safePurgeLogRemotePath,
+    ...(hasChanges ? [safeManifestRemotePath] : []),
+  ])].sort();
+  stats.purgeUrls = purgePathNames.length;
   const useFullPurge = Boolean(client.apiAccessKey && client.pullZoneId)
     && typeof client.purgePullZone === 'function'
     && (remotePurgeLog?.status === 'pending' && remotePurgeLog.mode === 'full-zone'
-      || purgePaths.length >= fullPurgeThreshold);
+      || affectedPathNames.length >= fullPurgeThreshold);
   stats.purgeMode = useFullPurge ? 'full-zone' : 'targeted';
 
   onProgress({ type: 'stage', phase: 'Recording pending CDN invalidations' });
@@ -192,47 +227,66 @@ export async function synchronize(options) {
 
   onProgress({
     type: 'stage',
-    phase: useFullPurge ? `Invalidating entire Bunny CDN zone (${purgePaths.length} affected URLs)` : 'Invalidating Bunny CDN',
-    total: useFullPurge ? 1 : purgePaths.length,
+    phase: useFullPurge ? `Invalidating entire Bunny CDN zone (${purgePathNames.length} affected URLs)` : 'Invalidating Bunny CDN',
+    total: useFullPurge ? 1 : purgePathNames.length,
   });
   const purgeResults = useFullPurge
     ? await runOperations([['full Pull Zone']], 1, async () => {
       const result = await client.purgePullZone();
       return operationResult('full Pull Zone', result.skipped ? 'skipped' : 'succeeded');
     }, { kind: 'purge', onProgress })
-    : await runOperations(purgePaths, purgeConcurrency, async ([filePath]) => {
-      const result = await client.purgeFile(filePath);
-      return operationResult(filePath, result.skipped ? 'skipped' : 'succeeded');
-    }, { kind: 'purge', onProgress });
-  stats.purgesSucceeded = purgeResults.filter(result => result.status === 'succeeded').length;
-  stats.purgesSkipped = purgeResults.filter(result => result.status === 'skipped').length;
-  stats.purgesFailed = purgeResults.filter(result => result.status === 'failed').length;
+    : await purgeExactPaths(client, purgePathNames, purgeConcurrency, onProgress);
+  recordPurgeResults(stats, purgeResults);
   const purgeFailures = purgeResults.filter(result => result.status === 'failed');
-  if (purgeFailures.length) {
-    const details = purgeFailures.map(result => result.error?.message ?? String(result.error)).join('; ');
-    const pendingPaths = useFullPurge ? purgePathNames : purgeFailures.map(result => result.path);
-    try {
+  const finalLogStatus = purgeFailures.length ? 'pending' : 'completed';
+  const finalLogPaths = purgeFailures.length
+    ? (useFullPurge ? purgePathNames : purgeFailures.map(result => result.path))
+    : purgePathNames;
+  const details = purgeFailures.map(result => result.error?.message ?? String(result.error)).join('; ');
+
+  onProgress({
+    type: 'stage',
+    phase: finalLogStatus === 'completed' ? 'Completing remote purge log' : 'Recording failed CDN invalidations',
+  });
+  try {
+    await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
+      status: finalLogStatus,
+      mode: stats.purgeMode,
+      paths: finalLogPaths,
+      error: details,
+    }));
+  } catch (logError) {
+    throw new AggregateError(
+      [...purgeFailures.map(result => result.error), logError],
+      `${purgeFailures.length} CDN purge operation(s) failed; updating the remote purge log also failed.`,
+    );
+  }
+  stats.purgeLog = finalLogStatus;
+
+  onProgress({ type: 'stage', phase: 'Refreshing remote purge log CDN cache', total: 1 });
+  const finalLogPurgeResults = await purgeExactPaths(client, [safePurgeLogRemotePath], 1, onProgress);
+  recordPurgeResults(stats, finalLogPurgeResults);
+  const finalLogPurgeFailures = finalLogPurgeResults.filter(result => result.status === 'failed');
+  const allPurgeFailures = [...purgeFailures, ...finalLogPurgeFailures];
+  if (allPurgeFailures.length) {
+    if (!purgeFailures.length) {
+      const finalDetails = finalLogPurgeFailures
+        .map(result => result.error?.message ?? String(result.error))
+        .join('; ');
       await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
         status: 'pending',
-        mode: stats.purgeMode,
-        paths: pendingPaths,
-        error: details,
+        mode: 'targeted',
+        paths: [safePurgeLogRemotePath],
+        error: finalDetails,
       }));
-    } catch (logError) {
-      throw new AggregateError(
-        [...purgeFailures.map(result => result.error), logError],
-        `${purgeFailures.length} CDN purge operation(s) failed; updating the pending purge log also failed.`,
-      );
+      stats.purgeLog = 'pending';
     }
-    throw new AggregateError(purgeFailures.map(result => result.error), `${purgeFailures.length} CDN purge operation(s) failed.`);
+    throw new AggregateError(
+      allPurgeFailures.map(result => result.error),
+      `${allPurgeFailures.length} CDN purge operation(s) failed.`,
+    );
   }
 
-  onProgress({ type: 'stage', phase: 'Completing remote purge log' });
-  await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
-    status: 'completed',
-    mode: stats.purgeMode,
-    paths: purgePathNames,
-  }));
   stats.purgeLog = 'completed';
   onProgress({ type: 'stage', phase: 'Synchronization complete' });
   return { stats, difference };

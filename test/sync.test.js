@@ -17,6 +17,7 @@ function withPurgeLog(client) {
   return {
     getPurgeLog: async () => null,
     uploadPurgeLog: async () => {},
+    purgeFile: async () => ({ skipped: true }),
     ...client,
   };
 }
@@ -71,8 +72,11 @@ test('first deployment uploads everything and advances the manifest before purgi
     'upload:index.html',
     'purge-log:pending',
     'manifest',
+    'purge:.bunny-sync/manifest.json',
+    'purge:.bunny-sync/purge-log.json',
     'purge:index.html',
     'purge-log:completed',
+    'purge:.bunny-sync/purge-log.json',
   ]);
   assert.equal(stats.added, 1);
   assert.equal(stats.manifestUploaded, true);
@@ -133,11 +137,12 @@ test('unmanifested remote files are never considered or deleted', async () => {
 test('no hash changes performs no mutations and does not rewrite the manifest', async () => {
   let mutated = false;
   const purgeLogs = [];
+  const purged = [];
   const client = withPurgeLog({
     getManifest: async () => remote([['index.html', A, 1]]),
     uploadFile: async () => { mutated = true; },
     deleteFile: async () => { mutated = true; },
-    purgeFile: async () => { mutated = true; },
+    purgeFile: async filePath => (purged.push(filePath), { skipped: false }),
     uploadManifest: async () => { mutated = true; },
     uploadPurgeLog: async (filePath, contents) => purgeLogs.push(JSON.parse(contents)),
   });
@@ -153,6 +158,8 @@ test('no hash changes performs no mutations and does not rewrite the manifest', 
   assert.equal(purgeLogs.length, 1);
   assert.equal(purgeLogs[0].status, 'completed');
   assert.equal(purgeLogs[0].mode, 'none');
+  assert.deepEqual(purged, ['.bunny-sync/purge-log.json']);
+  assert.equal(stats.purgesSucceeded, 1);
 });
 
 test('CDN purge failure preserves the advanced manifest and a pending purge log', async () => {
@@ -161,7 +168,10 @@ test('CDN purge failure preserves the advanced manifest and a pending purge log'
   const client = withPurgeLog({
     getManifest: async () => remote([['index.html', A, 1]]),
     uploadFile: async () => {},
-    purgeFile: async () => { throw new Error('purge failed'); },
+    purgeFile: async filePath => {
+      if (filePath === 'index.html') throw new Error('purge failed');
+      return { skipped: false };
+    },
     uploadManifest: async () => { manifestUploaded = true; },
     uploadPurgeLog: async (filePath, contents) => purgeLogs.push(JSON.parse(contents)),
   });
@@ -205,7 +215,13 @@ test('a later deploy retries pending purges even when both manifests match', asy
     statistics: stats,
   });
 
-  assert.deepEqual(calls, ['purge-log:pending', 'purge:index.html', 'purge-log:completed']);
+  assert.deepEqual(calls, [
+    'purge-log:pending',
+    'purge:.bunny-sync/purge-log.json',
+    'purge:index.html',
+    'purge-log:completed',
+    'purge:.bunny-sync/purge-log.json',
+  ]);
   assert.equal(stats.pendingPurgesRecovered, 1);
   assert.equal(stats.manifestUploaded, false);
   assert.equal(stats.purgeLog, 'completed');
@@ -255,8 +271,8 @@ test('many affected URLs use one full Pull Zone purge', async () => {
     statistics: stats,
   });
 
-  assert.deepEqual(calls, ['full']);
+  assert.deepEqual(calls, ['full', 'targeted:.bunny-sync/purge-log.json']);
   assert.equal(stats.purgeMode, 'full-zone');
-  assert.equal(stats.purgeUrls, 3);
-  assert.equal(stats.purgesSucceeded, 1);
+  assert.equal(stats.purgeUrls, 5);
+  assert.equal(stats.purgesSucceeded, 2);
 });
