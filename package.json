@@ -1,0 +1,56 @@
+{
+  "name": "eleventy-bunny-sync",
+  "version": "0.1.0",
+  "description": "Manifest-based Eleventy deployments to Bunny Storage and CDN",
+  "type": "module",
+  "author": "Thomas Goorden",
+  "keywords": [
+    "11ty",
+    "bunny.net",
+    "bunnycdn",
+    "cdn",
+    "deployment",
+    "eleventy",
+    "storage"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tgoorden/eleventy-bunny-sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tgoorden/eleventy-bunny-sync/issues"
+  },
+  "homepage": "https://github.com/tgoorden/eleventy-bunny-sync#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "bin",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./src/index.js",
+    "./eleventy": "./src/eleventy-plugin.js"
+  },
+  "bin": {
+    "eleventy-bunny-sync": "./bin/eleventy-bunny-sync.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:package": "node scripts/package-smoke.mjs",
+    "test:all": "npm test && npm run test:package",
+    "prepublishOnly": "npm run test:all"
+  },
+  "peerDependencies": {
+    "@11ty/eleventy": ">=3 <4"
+  },
+  "devDependencies": {
+    "@11ty/eleventy": "^3.1.6"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
