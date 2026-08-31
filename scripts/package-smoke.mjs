@@ -34,9 +34,10 @@ try {
   ]);
 
   const installedPackage = path.join(consumer, 'node_modules/eleventy-bunny-sync');
-  const help = run(process.execPath, [path.join(installedPackage, 'bin/eleventy-bunny-sync.mjs'), '--help']);
+  const executable = path.join(consumer, 'node_modules', '.bin', 'eleventy-bunny-sync');
+  const help = run(executable, ['--help']);
   if (!help.includes('Usage: eleventy-bunny-sync')) {
-    throw new Error('Installed CLI did not print its usage information.');
+    throw new Error('Installed package executable did not print its usage information.');
   }
 
   await import(path.join(installedPackage, 'src/index.js'));

@@ -6,7 +6,7 @@ import test from 'node:test';
 import Eleventy from '@11ty/eleventy';
 import eleventyBunnyManifest from '../src/eleventy-plugin.js';
 
-async function build(projectDirectory) {
+async function build(projectDirectory, { preserve = [] } = {}) {
   const previousDirectory = process.cwd();
   process.chdir(projectDirectory);
   try {
@@ -15,7 +15,7 @@ async function build(projectDirectory) {
       quietMode: true,
       runMode: 'build',
       config(eleventyConfig) {
-        eleventyConfig.addPlugin(eleventyBunnyManifest, { projectDirectory });
+        eleventyConfig.addPlugin(eleventyBunnyManifest, { projectDirectory, preserve });
         eleventyConfig.addPassthroughCopy({ 'src/assets': 'assets' });
       },
     });
@@ -46,6 +46,22 @@ test('real Eleventy builds include results and passthrough sources but exclude s
     await build(projectDirectory);
     const secondPaths = (await manifest(projectDirectory)).files.map(entry => entry[0]);
     assert.deepEqual(secondPaths, ['index.html']);
+  } finally {
+    await rm(projectDirectory, { recursive: true, force: true });
+  }
+});
+
+test('real Eleventy builds record preserved paths but omit matching passthrough output', async () => {
+  const projectDirectory = await mkdtemp(path.join(os.tmpdir(), 'eleventy-bunny-sync-preserve-'));
+  try {
+    await mkdir(path.join(projectDirectory, 'src/assets/img'), { recursive: true });
+    await writeFile(path.join(projectDirectory, 'src/index.md'), '# Current page\n');
+    await writeFile(path.join(projectDirectory, 'src/assets/img/cover.jpg'), 'cover image\n');
+
+    await build(projectDirectory, { preserve: ['assets/img/**'] });
+    const result = await manifest(projectDirectory);
+    assert.deepEqual(result.preserve, ['assets/img/**']);
+    assert.deepEqual(result.files.map(entry => entry[0]), ['index.html']);
   } finally {
     await rm(projectDirectory, { recursive: true, force: true });
   }

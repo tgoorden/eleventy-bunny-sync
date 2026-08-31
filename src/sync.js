@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import {
-  compareManifests,
   mapConcurrent,
   normaliseManifestPath,
   parseManifest,
+  prepareManifestSynchronization,
   serialiseManifest,
   validateManifest,
 } from './manifest.js';
@@ -52,6 +52,7 @@ export function createStatistics() {
     added: 0,
     changed: 0,
     unchanged: 0,
+    preserved: 0,
     deleted: 0,
     uploadsSucceeded: 0,
     uploadsFailed: 0,
@@ -119,10 +120,11 @@ export async function synchronize(options) {
   stats.pendingPurgesRecovered = recoveredPaths.length;
 
   onProgress({ type: 'stage', phase: 'Comparing manifests' });
-  const difference = compareManifests(localManifest, remoteManifest);
+  const { difference, nextRemoteManifest } = prepareManifestSynchronization(localManifest, remoteManifest);
   stats.added = difference.added.length;
   stats.changed = difference.changed.length;
   stats.unchanged = difference.unchanged.length;
+  stats.preserved = difference.preserved.length;
   stats.deleted = difference.deleted.length;
   const uploads = [...difference.added, ...difference.changed];
   const hasChanges = remoteText === null || uploads.length > 0 || difference.deleted.length > 0;
@@ -221,7 +223,7 @@ export async function synchronize(options) {
 
   if (hasChanges) {
     onProgress({ type: 'stage', phase: 'Uploading remote manifest' });
-    await client.uploadManifest(safeManifestRemotePath, serialiseManifest(localManifest, { remote: true }));
+    await client.uploadManifest(safeManifestRemotePath, serialiseManifest(nextRemoteManifest, { remote: true }));
     stats.manifestUploaded = true;
   }
 

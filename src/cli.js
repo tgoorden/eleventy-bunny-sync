@@ -25,6 +25,7 @@ export function formatStatistics(stats, { success, durationMs }) {
     `  New files:                ${stats.added}`,
     `  Changed files (hash):     ${stats.changed}`,
     `  Unchanged files:          ${stats.unchanged}`,
+    `  Remote files preserved:   ${stats.preserved}`,
     `  Files marked for deletion:${String(stats.deleted).padStart(2, ' ')}`,
     `  Uploads:                  ${stats.uploadsSucceeded} succeeded, ${stats.uploadsFailed} failed`,
     `  Deletions:                ${stats.deletesSucceeded} succeeded, ${stats.deletesMissing} already absent, ${stats.deletesFailed} failed`,

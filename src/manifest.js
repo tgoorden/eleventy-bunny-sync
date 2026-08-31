@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, rename, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import picomatch from 'picomatch';
 
 export const MANIFEST_VERSION = 1;
 export const HASH_ALGORITHM = 'sha256';
@@ -20,6 +21,36 @@ export function normaliseManifestPath(value) {
     throw new Error(`Invalid manifest path: ${JSON.stringify(value)}`);
   }
   return result;
+}
+
+export function normalisePreservePattern(value) {
+  const raw = String(value ?? '').trim().replaceAll('\\', '/');
+  const result = raw.replace(/^\.\//, '').replace(/^\/+/, '');
+  if (
+    !result
+    || result.startsWith('!')
+    || result.endsWith('/')
+    || result.split('/').some(part => !part || part === '.' || part === '..')
+  ) {
+    throw new Error(`Invalid preserved manifest path pattern: ${JSON.stringify(value)}`);
+  }
+  try {
+    picomatch.makeRe(result, { dot: true, nonegate: true });
+  } catch (error) {
+    throw new Error(`Invalid preserved manifest path pattern ${JSON.stringify(value)}: ${error.message}`);
+  }
+  return result;
+}
+
+export function normalisePreservePatterns(value = []) {
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.map(normalisePreservePattern))].sort(comparePath);
+}
+
+export function createPreserveMatcher(patterns = []) {
+  const normalised = normalisePreservePatterns(patterns);
+  if (!normalised.length) return () => false;
+  return picomatch(normalised, { dot: true, nonegate: true });
 }
 
 function outputRelativePath(outputDirectory, outputPath, projectDirectory) {
@@ -98,13 +129,22 @@ export async function createLocalManifest(options) {
     outputDirectory,
     projectDirectory = process.cwd(),
     hashConcurrency = 8,
+    preserve = [],
   } = options;
-  const sources = collectManifestSources({ results, passthroughMap, outputDirectory, projectDirectory });
+  const preservePatterns = normalisePreservePatterns(preserve);
+  const isPreserved = createPreserveMatcher(preservePatterns);
+  const sources = collectManifestSources({ results, passthroughMap, outputDirectory, projectDirectory })
+    .filter(entry => !isPreserved(entry.path));
   const files = await mapConcurrent(sources, hashConcurrency, async entry => {
     const { hash, size } = await hashFile(entry.source);
     return [entry.path, hash, size, slash(path.relative(projectDirectory, entry.source)) || '.'];
   });
-  return { version: MANIFEST_VERSION, hash: HASH_ALGORITHM, files };
+  return {
+    version: MANIFEST_VERSION,
+    hash: HASH_ALGORITHM,
+    ...(preservePatterns.length ? { preserve: preservePatterns } : {}),
+    files,
+  };
 }
 
 export function toRemoteManifest(manifest) {
@@ -119,6 +159,17 @@ export function toRemoteManifest(manifest) {
 export function validateManifest(value, { requireSources = false } = {}) {
   if (!value || value.version !== MANIFEST_VERSION || value.hash !== HASH_ALGORITHM || !Array.isArray(value.files)) {
     throw new Error('Unsupported or malformed Bunny deployment manifest.');
+  }
+
+  if (value.preserve !== undefined) {
+    if (!Array.isArray(value.preserve)) {
+      throw new Error('Preserved manifest path patterns must be an array.');
+    }
+    const normalised = normalisePreservePatterns(value.preserve);
+    if (normalised.length !== value.preserve.length
+      || normalised.some((pattern, index) => pattern !== value.preserve[index])) {
+      throw new Error('Preserved manifest path patterns must be unique, normalized, and sorted.');
+    }
   }
 
   let previous = '';
@@ -188,5 +239,27 @@ export function compareManifests(localManifest, remoteManifest) {
     changed,
     unchanged,
     deleted: [...remote.values()].sort((a, b) => comparePath(a[0], b[0])),
+  };
+}
+
+export function prepareManifestSynchronization(localManifest, remoteManifest) {
+  validateManifest(localManifest, { requireSources: true });
+  validateManifest(remoteManifest);
+  const isPreserved = createPreserveMatcher(localManifest.preserve ?? []);
+  const overlapping = localManifest.files.find(entry => isPreserved(entry[0]));
+  if (overlapping) {
+    throw new Error(`Local manifest entry also matches a preserved path pattern: ${overlapping[0]}`);
+  }
+
+  const compared = compareManifests(localManifest, remoteManifest);
+  const preserved = compared.deleted.filter(entry => isPreserved(entry[0]));
+  const deleted = compared.deleted.filter(entry => !isPreserved(entry[0]));
+  const nextRemoteManifest = toRemoteManifest(localManifest);
+  nextRemoteManifest.files = [...nextRemoteManifest.files, ...preserved]
+    .sort((a, b) => comparePath(a[0], b[0]));
+
+  return {
+    difference: { ...compared, deleted, preserved },
+    nextRemoteManifest,
   };
 }

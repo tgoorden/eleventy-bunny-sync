@@ -276,3 +276,101 @@ test('many affected URLs use one full Pull Zone purge', async () => {
   assert.equal(stats.purgeUrls, 5);
   assert.equal(stats.purgesSucceeded, 2);
 });
+
+test('content-only deployment preserves remote files in storage and the uploaded manifest', async () => {
+  const calls = [];
+  let uploadedManifest;
+  const client = withPurgeLog({
+    getManifest: async () => remote([
+      ['img/cover.jpg', A, 100],
+      ['img/nested/detail.jpg', B, 200],
+      ['index.html', A, 1],
+      ['old.html', A, 1],
+    ]),
+    uploadFile: async filePath => calls.push(`upload:${filePath}`),
+    deleteFile: async filePath => (calls.push(`delete:${filePath}`), { missing: false }),
+    purgeFile: async filePath => (calls.push(`purge:${filePath}`), { skipped: false }),
+    uploadManifest: async (filePath, contents) => { uploadedManifest = JSON.parse(contents); },
+  });
+  const stats = createStatistics();
+  const localManifest = {
+    version: 1,
+    hash: 'sha256',
+    preserve: ['img/**'],
+    files: [['index.html', B, 2, '_site/index.html']],
+  };
+
+  const { difference } = await synchronize({ client, localManifest, statistics: stats });
+
+  assert.deepEqual(difference.preserved.map(entry => entry[0]), [
+    'img/cover.jpg',
+    'img/nested/detail.jpg',
+  ]);
+  assert.equal(stats.preserved, 2);
+  assert.equal(stats.deleted, 1);
+  assert.deepEqual(uploadedManifest.files, [
+    ['img/cover.jpg', A, 100],
+    ['img/nested/detail.jpg', B, 200],
+    ['index.html', B, 2],
+  ]);
+  assert.deepEqual(calls.filter(call => call.startsWith('upload:')), ['upload:index.html']);
+  assert.deepEqual(calls.filter(call => call.startsWith('delete:')), ['delete:old.html']);
+  assert.equal(calls.some(call => call.includes('img/')), false);
+});
+
+test('omitted preserved files alone do not cause mutations or a manifest rewrite', async () => {
+  let mutated = false;
+  const client = withPurgeLog({
+    getManifest: async () => remote([
+      ['img/cover.jpg', A, 100],
+      ['index.html', A, 1],
+    ]),
+    uploadFile: async () => { mutated = true; },
+    deleteFile: async () => { mutated = true; },
+    uploadManifest: async () => { mutated = true; },
+  });
+  const stats = createStatistics();
+  await synchronize({
+    client,
+    localManifest: {
+      version: 1,
+      hash: 'sha256',
+      preserve: ['img/**'],
+      files: [['index.html', A, 1, '_site/index.html']],
+    },
+    statistics: stats,
+  });
+
+  assert.equal(mutated, false);
+  assert.equal(stats.preserved, 1);
+  assert.equal(stats.deleted, 0);
+  assert.equal(stats.manifestUploaded, false);
+});
+
+test('a virgin content-only deployment remains a valid first deployment', async () => {
+  let uploadedManifest;
+  const client = withPurgeLog({
+    getManifest: async () => null,
+    uploadFile: async () => {},
+    uploadManifest: async (filePath, contents) => { uploadedManifest = JSON.parse(contents); },
+  });
+  const stats = createStatistics();
+  await synchronize({
+    client,
+    localManifest: {
+      version: 1,
+      hash: 'sha256',
+      preserve: ['img/**'],
+      files: [['index.html', A, 1, '_site/index.html']],
+    },
+    statistics: stats,
+  });
+
+  assert.equal(stats.remoteManifest, 'missing');
+  assert.equal(stats.preserved, 0);
+  assert.deepEqual(uploadedManifest, {
+    version: 1,
+    hash: 'sha256',
+    files: [['index.html', A, 1]],
+  });
+});

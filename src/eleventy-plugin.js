@@ -26,6 +26,7 @@ export default function eleventyBunnyManifest(eleventyConfig, options = {}) {
       outputDirectory,
       projectDirectory,
       hashConcurrency: options.hashConcurrency ?? 8,
+      preserve: options.preserve ?? [],
     });
     await writeManifest(manifestPath, manifest);
     console.log(`[Bunny manifest] Wrote ${manifest.files.length} files to ${path.relative(projectDirectory, manifestPath)}`);

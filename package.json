@@ -1,6 +1,6 @@
 {
   "name": "eleventy-bunny-sync",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Manifest-based Eleventy deployments to Bunny Storage and CDN",
   "type": "module",
   "author": "Thomas Goorden",
@@ -35,7 +35,10 @@
     "./eleventy": "./src/eleventy-plugin.js"
   },
   "bin": {
-    "eleventy-bunny-sync": "./bin/eleventy-bunny-sync.mjs"
+    "eleventy-bunny-sync": "bin/eleventy-bunny-sync.mjs"
+  },
+  "dependencies": {
+    "picomatch": "^4.0.7"
   },
   "scripts": {
     "test": "node --test test/*.test.js",
