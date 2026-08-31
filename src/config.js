@@ -18,6 +18,13 @@ function positiveInteger(environment, name, fallback) {
   return result;
 }
 
+function boolean(environment, name, fallback = false) {
+  const result = value(environment, name, String(fallback)).toLowerCase();
+  if (result === 'true') return true;
+  if (result === 'false') return false;
+  throw new Error(`${name} must be true or false.`);
+}
+
 function pullZoneId(environment) {
   const result = value(environment, 'BUNNY_PULL_ZONE_ID');
   if (result && !/^[1-9]\d*$/.test(result)) throw new Error('BUNNY_PULL_ZONE_ID must be a positive integer.');
@@ -36,6 +43,7 @@ export function configFromEnvironment(environment = process.env, projectDirector
     localManifestPath: path.resolve(projectDirectory, LOCAL_MANIFEST_PATH),
     concurrency: positiveInteger(environment, 'BUNNY_MAX_CONCURRENT_OPERATIONS', 12),
     purgeConcurrency: positiveInteger(environment, 'BUNNY_MAX_CONCURRENT_PURGES', 8),
+    fullPurge: boolean(environment, 'BUNNY_FULL_PURGE'),
     fullPurgeThreshold: positiveInteger(environment, 'BUNNY_FULL_PURGE_THRESHOLD', 100),
     client: {
       storageZoneName: required(environment, 'BUNNY_STORAGE_ZONE_NAME'),

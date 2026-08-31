@@ -4,12 +4,13 @@ import { createStatistics, readLocalManifest, synchronize } from './sync.js';
 import { InteractiveProgress } from './progress.js';
 
 export function parseArguments(argv) {
-  const allowed = new Set(['--dry-run', '--check', '--interactive', '--help']);
+  const allowed = new Set(['--dry-run', '--check', '--interactive', '--full-purge', '--help']);
   const unknown = argv.filter(argument => !allowed.has(argument));
   if (unknown.length) throw new Error(`Unknown option: ${unknown.join(', ')}`);
   return {
     dryRun: argv.includes('--dry-run') || argv.includes('--check'),
     interactive: argv.includes('--interactive'),
+    fullPurge: argv.includes('--full-purge'),
     help: argv.includes('--help'),
   };
 }
@@ -48,7 +49,7 @@ export async function runCli({ argv = process.argv.slice(2), environment = proce
   try {
     const args = parseArguments(argv);
     if (args.help) {
-      console.log('Usage: eleventy-bunny-sync [--interactive] [--dry-run|--check]');
+      console.log('Usage: eleventy-bunny-sync [--interactive] [--full-purge] [--dry-run|--check]');
       success = true;
       showSummary = false;
       return 0;
@@ -65,6 +66,7 @@ export async function runCli({ argv = process.argv.slice(2), environment = proce
       dryRun: args.dryRun,
       concurrency: config.concurrency,
       purgeConcurrency: config.purgeConcurrency,
+      fullPurge: args.fullPurge || config.fullPurge,
       fullPurgeThreshold: config.fullPurgeThreshold,
       projectDirectory: config.projectDirectory,
       statistics: stats,

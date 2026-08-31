@@ -89,6 +89,7 @@ source control.
 | `BUNNY_CDN_HOSTNAME` | no | — | Public Pull Zone hostname for exact-URL purges |
 | `BUNNY_API_KEY` | with CDN hostname | — | Bunny account API key, not the Storage key |
 | `BUNNY_PULL_ZONE_ID` | no | — | Numeric Pull Zone ID enabling full-zone purges |
+| `BUNNY_FULL_PURGE` | no | `false` | Always purge the full Pull Zone instead of invalidating individual URLs |
 | `BUNNY_FULL_PURGE_THRESHOLD` | no | `100` | URL count at which one full-zone purge is used |
 | `BUNNY_MAX_CONCURRENT_PURGES` | no | `8` | Parallel exact-URL invalidations |
 
@@ -132,6 +133,8 @@ an older cached copy.
 
 Targeted invalidations use `exactPath=true`. With `BUNNY_PULL_ZONE_ID`
 configured, 100 or more affected URLs use one full Pull Zone purge by default.
+Set `BUNNY_FULL_PURGE=true` or pass `--full-purge` to always use a full purge.
+Full purges require both `BUNNY_API_KEY` and `BUNNY_PULL_ZONE_ID`.
 
 ## GitHub Actions
 

@@ -77,6 +77,7 @@ export async function synchronize(options) {
     dryRun = false,
     concurrency = 10,
     purgeConcurrency = concurrency,
+    fullPurge = false,
     fullPurgeThreshold = 100,
     projectDirectory = process.cwd(),
     onWarning = () => {},
@@ -133,8 +134,13 @@ export async function synchronize(options) {
     onProgress({ type: 'stage', phase: 'Dry run complete' });
     return { stats, difference };
   }
+  const supportsFullPurge = Boolean(client.apiAccessKey && client.pullZoneId)
+    && typeof client.purgePullZone === 'function';
+  if (fullPurge && !supportsFullPurge) {
+    throw new Error('Full CDN purge requires BUNNY_API_KEY and BUNNY_PULL_ZONE_ID.');
+  }
   if (!hasChanges && !hasPendingPurges) {
-    stats.purgeMode = 'targeted';
+    stats.purgeMode = fullPurge ? 'full-zone' : 'targeted';
     stats.purgeUrls = 1;
     onProgress({ type: 'stage', phase: 'Recording no-change deployment attempt' });
     await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
@@ -144,14 +150,19 @@ export async function synchronize(options) {
     }));
     stats.purgeLog = 'completed';
     onProgress({ type: 'stage', phase: 'Refreshing remote purge log CDN cache', total: 1 });
-    const metadataPurgeResults = await purgeExactPaths(client, [safePurgeLogRemotePath], 1, onProgress);
+    const metadataPurgeResults = fullPurge
+      ? await runOperations([['full Pull Zone']], 1, async () => {
+        const result = await client.purgePullZone();
+        return operationResult('full Pull Zone', result.skipped ? 'skipped' : 'succeeded');
+      }, { kind: 'purge', onProgress })
+      : await purgeExactPaths(client, [safePurgeLogRemotePath], 1, onProgress);
     recordPurgeResults(stats, metadataPurgeResults);
     const metadataPurgeFailures = metadataPurgeResults.filter(result => result.status === 'failed');
     if (metadataPurgeFailures.length) {
       const details = metadataPurgeFailures.map(result => result.error?.message ?? String(result.error)).join('; ');
       await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
         status: 'pending',
-        mode: 'targeted',
+        mode: stats.purgeMode,
         paths: [safePurgeLogRemotePath],
         error: details,
       }));
@@ -207,9 +218,9 @@ export async function synchronize(options) {
     ...(hasChanges ? [safeManifestRemotePath] : []),
   ])].sort();
   stats.purgeUrls = purgePathNames.length;
-  const useFullPurge = Boolean(client.apiAccessKey && client.pullZoneId)
-    && typeof client.purgePullZone === 'function'
-    && (remotePurgeLog?.status === 'pending' && remotePurgeLog.mode === 'full-zone'
+  const useFullPurge = supportsFullPurge
+    && (fullPurge
+      || remotePurgeLog?.status === 'pending' && remotePurgeLog.mode === 'full-zone'
       || affectedPathNames.length >= fullPurgeThreshold);
   stats.purgeMode = useFullPurge ? 'full-zone' : 'targeted';
 
@@ -227,22 +238,63 @@ export async function synchronize(options) {
     stats.manifestUploaded = true;
   }
 
-  onProgress({
-    type: 'stage',
-    phase: useFullPurge ? `Invalidating entire Bunny CDN zone (${purgePathNames.length} affected URLs)` : 'Invalidating Bunny CDN',
-    total: useFullPurge ? 1 : purgePathNames.length,
-  });
-  const purgeResults = useFullPurge
-    ? await runOperations([['full Pull Zone']], 1, async () => {
+  if (useFullPurge) {
+    onProgress({ type: 'stage', phase: 'Completing remote purge log' });
+    await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
+      status: 'completed',
+      mode: stats.purgeMode,
+      paths: purgePathNames,
+    }));
+    stats.purgeLog = 'completed';
+
+    onProgress({
+      type: 'stage',
+      phase: `Invalidating entire Bunny CDN zone (${purgePathNames.length} affected URLs)`,
+      total: 1,
+    });
+    const purgeResults = await runOperations([['full Pull Zone']], 1, async () => {
       const result = await client.purgePullZone();
       return operationResult('full Pull Zone', result.skipped ? 'skipped' : 'succeeded');
-    }, { kind: 'purge', onProgress })
-    : await purgeExactPaths(client, purgePathNames, purgeConcurrency, onProgress);
+    }, { kind: 'purge', onProgress });
+    recordPurgeResults(stats, purgeResults);
+    const purgeFailures = purgeResults.filter(result => result.status === 'failed');
+    if (purgeFailures.length) {
+      const details = purgeFailures.map(result => result.error?.message ?? String(result.error)).join('; ');
+      try {
+        await client.uploadPurgeLog(safePurgeLogRemotePath, serialisePurgeLog({
+          status: 'pending',
+          mode: stats.purgeMode,
+          paths: purgePathNames,
+          error: details,
+        }));
+      } catch (logError) {
+        throw new AggregateError(
+          [...purgeFailures.map(result => result.error), logError],
+          'Full CDN purge failed; updating the remote purge log also failed.',
+        );
+      }
+      stats.purgeLog = 'pending';
+      throw new AggregateError(
+        purgeFailures.map(result => result.error),
+        'Full CDN purge failed.',
+      );
+    }
+
+    onProgress({ type: 'stage', phase: 'Synchronization complete' });
+    return { stats, difference };
+  }
+
+  onProgress({
+    type: 'stage',
+    phase: 'Invalidating Bunny CDN',
+    total: purgePathNames.length,
+  });
+  const purgeResults = await purgeExactPaths(client, purgePathNames, purgeConcurrency, onProgress);
   recordPurgeResults(stats, purgeResults);
   const purgeFailures = purgeResults.filter(result => result.status === 'failed');
   const finalLogStatus = purgeFailures.length ? 'pending' : 'completed';
   const finalLogPaths = purgeFailures.length
-    ? (useFullPurge ? purgePathNames : purgeFailures.map(result => result.path))
+    ? purgeFailures.map(result => result.path)
     : purgePathNames;
   const details = purgeFailures.map(result => result.error?.message ?? String(result.error)).join('; ');
 

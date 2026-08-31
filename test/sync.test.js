@@ -271,10 +271,79 @@ test('many affected URLs use one full Pull Zone purge', async () => {
     statistics: stats,
   });
 
-  assert.deepEqual(calls, ['full', 'targeted:.bunny-sync/purge-log.json']);
+  assert.deepEqual(calls, ['full']);
   assert.equal(stats.purgeMode, 'full-zone');
   assert.equal(stats.purgeUrls, 5);
-  assert.equal(stats.purgesSucceeded, 2);
+  assert.equal(stats.purgesSucceeded, 1);
+});
+
+test('full purge option uses the Pull Zone for a small deployment', async () => {
+  const calls = [];
+  const client = withPurgeLog({
+    apiAccessKey: 'api-key',
+    pullZoneId: '12345',
+    getManifest: async () => remote([['index.html', A, 1]]),
+    uploadFile: async () => {},
+    purgeFile: async filePath => (calls.push(`targeted:${filePath}`), { skipped: false }),
+    purgePullZone: async () => (calls.push('full'), { skipped: false }),
+    uploadManifest: async () => {},
+  });
+  const stats = createStatistics();
+
+  await synchronize({
+    client,
+    localManifest: local([['index.html', B, 1, '_site/index.html']]),
+    fullPurge: true,
+    statistics: stats,
+  });
+
+  assert.deepEqual(calls, ['full']);
+  assert.equal(stats.purgeMode, 'full-zone');
+});
+
+test('full purge option rejects incomplete Pull Zone configuration', async () => {
+  const client = withPurgeLog({
+    getManifest: async () => remote([['index.html', A, 1]]),
+    uploadFile: async () => {},
+    uploadManifest: async () => {},
+  });
+
+  await assert.rejects(synchronize({
+    client,
+    localManifest: local([['index.html', B, 1, '_site/index.html']]),
+    fullPurge: true,
+  }), /BUNNY_API_KEY and BUNNY_PULL_ZONE_ID/);
+});
+
+test('failed full purge remains pending for the next deployment', async () => {
+  const purgeLogs = [];
+  const client = withPurgeLog({
+    apiAccessKey: 'api-key',
+    pullZoneId: '12345',
+    getManifest: async () => remote([['index.html', A, 1]]),
+    uploadFile: async () => {},
+    purgePullZone: async () => { throw new Error('purge failed'); },
+    uploadManifest: async () => {},
+    uploadPurgeLog: async (filePath, contents) => purgeLogs.push(JSON.parse(contents)),
+  });
+  const stats = createStatistics();
+
+  await assert.rejects(synchronize({
+    client,
+    localManifest: local([['index.html', B, 1, '_site/index.html']]),
+    fullPurge: true,
+    statistics: stats,
+  }), /Full CDN purge failed/);
+
+  assert.equal(stats.purgesFailed, 1);
+  assert.equal(stats.purgeLog, 'pending');
+  assert.equal(purgeLogs.at(-1).status, 'pending');
+  assert.equal(purgeLogs.at(-1).mode, 'full-zone');
+  assert.deepEqual(purgeLogs.at(-1).paths, [
+    '.bunny-sync/manifest.json',
+    '.bunny-sync/purge-log.json',
+    'index.html',
+  ]);
 });
 
 test('content-only deployment preserves remote files in storage and the uploaded manifest', async () => {
